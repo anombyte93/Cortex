@@ -1,1 +1,0 @@
-Cortex v39 verifies truthful local-model states, screenshot OCR learning, quiet bulk screenshot ingestion, and temporal backfill.

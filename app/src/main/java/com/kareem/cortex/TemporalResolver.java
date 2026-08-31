@@ -37,6 +37,9 @@ public final class TemporalResolver {
         c.close();
     }
 
+    /** Resolve a natural-language expression for attention ranking. Returns 0 if no date can be grounded. */
+    public static long resolveForAttention(String expression,long anchorMs){Resolved r=resolve(nz(expression),anchorMs>0?anchorMs:System.currentTimeMillis());return r==null?0:r.when;}
+
     public static String displayStored(String stored){
         String s=nz(stored).trim();if(s.isEmpty())return "";
         Date d=parseCanonical(s);if(d==null)return s;
@@ -54,7 +57,7 @@ public final class TemporalResolver {
         boolean dateFound=false;
         if(has(n,"بعد بكرة","بعد بكره","day after tomorrow")){cal.add(Calendar.DAY_OF_YEAR,2);dateFound=true;}
         else if(has(n,"بكرة","بكره","tomorrow")){cal.add(Calendar.DAY_OF_YEAR,1);dateFound=true;}
-        else if(has(n,"النهاردة","اليوم","today","tonight")){dateFound=true;}
+        else if(has(n,"النهاردة","النهارده","اليوم","today","tonight")){dateFound=true;}
         else if(has(n,"الأسبوع الجاي","الاسبوع الجاي","next week")){cal.add(Calendar.DAY_OF_YEAR,7);dateFound=true;}
         else {Integer weekday=weekday(n);if(weekday!=null){int cur=cal.get(Calendar.DAY_OF_WEEK),delta=(weekday-cur+7)%7;if(delta==0)delta=7;cal.add(Calendar.DAY_OF_YEAR,delta);dateFound=true;}}
         if(!dateFound){Date absolute=parseLooseDate(raw,cal.getTime());if(absolute!=null){Calendar x=Calendar.getInstance();x.setTime(absolute);cal.set(Calendar.YEAR,x.get(Calendar.YEAR));cal.set(Calendar.MONTH,x.get(Calendar.MONTH));cal.set(Calendar.DAY_OF_MONTH,x.get(Calendar.DAY_OF_MONTH));dateFound=true;}}

@@ -5,22 +5,28 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import org.json.JSONObject;
 
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * Unified cognitive schema layered on top of the existing Cortex database.
  * Legacy memory tables remain intact while PRIME-V2 data is normalized around
  * raw evidence, durable memory, derived intelligence, provenance, feedback and AI execution.
  */
 public final class CognitiveSchema {
-    public static final int DB_VERSION = 6;
-    public static final String REVISION = "cognitive_003";
-    private static volatile boolean ready;
+    public static final int DB_VERSION = 7;
+    public static final String REVISION = "cognitive_004";
+    private static final Set<String> READY = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private CognitiveSchema(){}
 
     public static void ensure(SQLiteDatabase db){
-        if(ready)return;
+        if(db==null)return;
+        String readyKey=String.valueOf(db.getPath())+"|"+REVISION;
+        if(READY.contains(readyKey))return;
         synchronized(CognitiveSchema.class){
-            if(ready)return;
+            if(READY.contains(readyKey))return;
             createMeta(db);
             createRawSignals(db);
             createThreads(db);
@@ -35,8 +41,10 @@ public final class CognitiveSchema {
             migrateLegacyEntities(db);
             backfillDerivedRouting(db);
             backfillFeedbackRouting(db);
+            backfillCognitiveState(db);
+            backfillDerivedV7(db);
             db.execSQL("INSERT OR REPLACE INTO schema_meta(key,value,updated_at) VALUES('cognitive_schema','"+REVISION+"',strftime('%s','now')*1000)");
-            ready=true;
+            READY.add(readyKey);
         }
     }
 
@@ -45,7 +53,8 @@ public final class CognitiveSchema {
     private static void createRawSignals(SQLiteDatabase db){
         db.execSQL("CREATE TABLE IF NOT EXISTS raw_signals(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,source TEXT,title TEXT,body TEXT,metadata_json TEXT,fingerprint TEXT UNIQUE,state TEXT DEFAULT 'filtered',disposition TEXT,importance INTEGER DEFAULT 0,reason TEXT,promoted_item_id INTEGER DEFAULT 0,occurred_at INTEGER NOT NULL,retention_until INTEGER DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)");
         addColumn(db,"raw_signals","thread_id","INTEGER DEFAULT 0");addColumn(db,"raw_signals","confidence","REAL DEFAULT 0");addColumn(db,"raw_signals","policy_version","TEXT DEFAULT ''");addColumn(db,"raw_signals","filter_engine","TEXT DEFAULT ''");addColumn(db,"raw_signals","content_hash","TEXT DEFAULT ''");
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_time ON raw_signals(occurred_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_disposition ON raw_signals(disposition,occurred_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_source ON raw_signals(source,occurred_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_thread ON raw_signals(thread_id,occurred_at ASC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_state ON raw_signals(state,updated_at DESC)");
+        addColumn(db,"raw_signals","cognitive_state","TEXT DEFAULT ''");addColumn(db,"raw_signals","cognitive_version","TEXT DEFAULT ''");addColumn(db,"raw_signals","final_reason","TEXT DEFAULT ''");addColumn(db,"raw_signals","cognitive_updated_at","INTEGER DEFAULT 0");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_time ON raw_signals(occurred_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_disposition ON raw_signals(disposition,occurred_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_source ON raw_signals(source,occurred_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_thread ON raw_signals(thread_id,occurred_at ASC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_signal_state ON raw_signals(state,updated_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_raw_cognitive_state ON raw_signals(cognitive_state,updated_at DESC)");
     }
 
     private static void createThreads(SQLiteDatabase db){
@@ -56,7 +65,9 @@ public final class CognitiveSchema {
     private static void createDerivedItems(SQLiteDatabase db){
         db.execSQL("CREATE TABLE IF NOT EXISTS derived_items(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT,state TEXT DEFAULT 'open',confidence REAL DEFAULT 0,importance INTEGER DEFAULT 0,fingerprint TEXT,metadata_json TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,resolved_at INTEGER DEFAULT 0)");
         addColumn(db,"derived_items","source_key","TEXT DEFAULT ''");addColumn(db,"derived_items","thread_id","INTEGER DEFAULT 0");addColumn(db,"derived_items","anchor_signal_id","INTEGER DEFAULT 0");addColumn(db,"derived_items","candidate_kind","TEXT DEFAULT ''");addColumn(db,"derived_items","semantic_key","TEXT DEFAULT ''");
+        addColumn(db,"derived_items","urgency","INTEGER DEFAULT 0");addColumn(db,"derived_items","person_key","TEXT DEFAULT ''");addColumn(db,"derived_items","due_at","INTEGER DEFAULT 0");addColumn(db,"derived_items","requires_user_action","INTEGER DEFAULT 0");addColumn(db,"derived_items","requires_follow_up","INTEGER DEFAULT 0");addColumn(db,"derived_items","requires_content_extraction","INTEGER DEFAULT 0");addColumn(db,"derived_items","model_run_id","INTEGER DEFAULT 0");addColumn(db,"derived_items","priority_score","REAL DEFAULT 0");
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_derived_fingerprint ON derived_items(fingerprint) WHERE fingerprint IS NOT NULL AND fingerprint<>''");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_kind_state ON derived_items(kind,state,importance DESC,updated_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_recent ON derived_items(updated_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_review_route ON derived_items(kind,state,candidate_kind,source_key,thread_id,updated_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_anchor ON derived_items(anchor_signal_id,kind,state)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_semantic ON derived_items(thread_id,kind,state,semantic_key,updated_at DESC)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_priority ON derived_items(state,priority_score DESC,urgency DESC,updated_at DESC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_due ON derived_items(state,due_at ASC)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_model_run ON derived_items(model_run_id)");db.execSQL("CREATE INDEX IF NOT EXISTS idx_derived_content_queue ON derived_items(requires_content_extraction,state,importance DESC)");
     }
 
     private static void createEntityGraph(SQLiteDatabase db){
@@ -110,6 +121,19 @@ public final class CognitiveSchema {
         db.execSQL("UPDATE feedback_events SET source_key=COALESCE((SELECT source_key FROM derived_items d WHERE d.id=feedback_events.target_id),'') WHERE target_type='derived' AND COALESCE(source_key,'')='' ");
         db.execSQL("UPDATE feedback_events SET candidate_kind=COALESCE((SELECT candidate_kind FROM derived_items d WHERE d.id=feedback_events.target_id),'') WHERE target_type='derived' AND COALESCE(candidate_kind,'')='' ");
         db.execSQL("UPDATE feedback_events SET scope_key=COALESCE(source_key,'')||'|'||COALESCE(candidate_kind,'') WHERE COALESCE(scope_key,'')='' ");
+    }
+
+    private static void backfillCognitiveState(SQLiteDatabase db){
+        db.execSQL("UPDATE raw_signals SET cognitive_state=CASE WHEN COALESCE(promoted_item_id,0)>0 THEN 'DERIVED' WHEN UPPER(COALESCE(disposition,''))='IGNORE' THEN 'IGNORED_NOISE' WHEN UPPER(COALESCE(disposition,''))='REVIEW' THEN 'REVIEW_REQUIRED' WHEN UPPER(COALESCE(disposition,''))='CONTEXT' THEN 'CONTEXT_ONLY' ELSE 'LEGACY_UNRESOLVED' END WHERE COALESCE(cognitive_state,'')=''");
+        db.execSQL("UPDATE raw_signals SET cognitive_version='legacy-cognitive-003' WHERE COALESCE(cognitive_version,'')=''");
+        db.execSQL("UPDATE raw_signals SET final_reason='Migrated from legacy disposition: ' || COALESCE(disposition,'none') WHERE COALESCE(final_reason,'')=''");
+        db.execSQL("UPDATE raw_signals SET cognitive_updated_at=CASE WHEN COALESCE(updated_at,0)>0 THEN updated_at ELSE created_at END WHERE COALESCE(cognitive_updated_at,0)=0");
+    }
+
+    private static void backfillDerivedV7(SQLiteDatabase db){
+        db.execSQL("UPDATE derived_items SET requires_user_action=1 WHERE UPPER(kind)='ACTION' AND COALESCE(requires_user_action,0)=0");
+        db.execSQL("UPDATE derived_items SET requires_follow_up=1 WHERE UPPER(kind)='WAITING' AND COALESCE(requires_follow_up,0)=0");
+        db.execSQL("UPDATE derived_items SET priority_score=COALESCE(importance,0) WHERE COALESCE(priority_score,0)=0");
     }
 
     private static void addColumn(SQLiteDatabase db,String table,String column,String definition){if(!hasColumn(db,table,column))db.execSQL("ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition);}

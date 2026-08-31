@@ -4,6 +4,7 @@ import android.app.*;
 import android.content.*;
 import android.net.Uri;
 import android.provider.CalendarContract;
+import android.view.View;
 import android.widget.Toast;
 import org.json.JSONObject;
 import java.text.SimpleDateFormat;
@@ -28,7 +29,11 @@ public final class CortexActionDispatcher {
         if(action.ready())b.setPositiveButton(primaryLabel(action.type),(d,w)->executeApproved(a,db,action));
         else b.setPositiveButton("Complete details",(d,w)->completeInBrain(a,action));
         b.setNeutralButton("Dismiss suggestion",(d,w)->{BrainActionStore.markStatus(db,action.rowId,"DISMISSED");toast(a,"Suggestion dismissed");});
-        b.show();
+        View appRoot=a.findViewById(android.R.id.content);final int previousImportance=appRoot==null?View.IMPORTANT_FOR_ACCESSIBILITY_AUTO:appRoot.getImportantForAccessibility();
+        AlertDialog dialog=b.create();dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnShowListener(d->{if(appRoot!=null)appRoot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);});
+        dialog.setOnDismissListener(d->{if(appRoot!=null)appRoot.setImportantForAccessibility(previousImportance);});
+        dialog.show();
     }
 
     private static void executeApproved(Activity a,VaultDb db,BrainActionStore.Action x){

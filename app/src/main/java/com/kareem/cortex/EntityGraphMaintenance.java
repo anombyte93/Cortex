@@ -10,7 +10,7 @@ import org.json.JSONObject;
  * A mention is not an identified person, and an inferred phrase is not a confirmed project.
  */
 public final class EntityGraphMaintenance {
-    public static final String VERSION="entity_graph_guard_004";
+    public static final String VERSION="entity_graph_guard_005";
     private EntityGraphMaintenance(){}
 
     public static void run(VaultDb db){
@@ -29,7 +29,7 @@ public final class EntityGraphMaintenance {
             Cursor c=s.rawQuery("SELECT id,title,raw_text,metadata_json FROM knowledge_items WHERE type='CONTACT' AND source='contacts_sync'",null);
             while(c.moveToNext()){
                 long memoryId=c.getLong(0);String original=n(c.getString(1)),raw=n(c.getString(2)),meta=n(c.getString(3));JSONObject srcMeta;try{srcMeta=new JSONObject(meta);}catch(Exception e){srcMeta=new JSONObject();}long contactId=srcMeta.optLong("contact_id",0);String phone=phoneIdentity(meta,raw);if(contactId<=0&&phone.isEmpty())continue;
-                String name=cleanContactName(original);if(name.isEmpty())name=firstLine(raw);if(name.isEmpty())name="Contact";
+                String name=EntityDisplayNamePolicy.cleanContactName(original);if(name.isEmpty())name=EntityDisplayNamePolicy.cleanContactName(firstLine(raw));if(name.isEmpty())name="Contact";
                 String anchorKind=contactId>0?"contact_id":"phone";String identityValue=contactId>0?String.valueOf(contactId):phone;String key="person|"+anchorKind+"|"+identityValue;long entity=findEntity(s,key);boolean userRenamed=false;String oldMeta="";
                 if(entity>0){Cursor e=s.query("entity_nodes",new String[]{"metadata_json"},"id=?",new String[]{String.valueOf(entity)},null,null,null,"1");if(e.moveToFirst())oldMeta=n(e.getString(0));e.close();userRenamed=oldMeta.contains("\"user_renamed\":true");}
                 JSONObject em=new JSONObject();em.put("identity","phone");em.put("identity_anchor",anchorKind);if(contactId>0)em.put("contact_id",contactId);if(!phone.isEmpty())em.put("phone_identity",phone);em.put("source","contacts_sync");em.put("guard",VERSION);if(userRenamed)em.put("user_renamed",true);
@@ -54,7 +54,6 @@ public final class EntityGraphMaintenance {
     private static long findEntity(SQLiteDatabase s,String key){Cursor c=s.query("entity_nodes",new String[]{"id"},"normalized_key=?",new String[]{key},null,null,null,"1");long id=c.moveToFirst()?c.getLong(0):0;c.close();return id;}
     private static void addAlias(SQLiteDatabase s,long entity,String source,String alias,double confidence,long now){String a=n(alias);if(a.isEmpty())return;ContentValues v=new ContentValues();v.put("entity_id",entity);v.put("source",source);v.put("alias",a);v.put("normalized_alias",LocalSemanticEmbedder.norm(a));v.put("confidence",confidence);v.put("metadata_json","{\"guard\":\""+VERSION+"\"}");v.put("created_at",now);s.insertWithOnConflict("entity_aliases",null,v,SQLiteDatabase.CONFLICT_IGNORE);}
     private static String phoneIdentity(String metadata,String raw){try{String x=new JSONObject(n(metadata)).optString("phone_identity","");String c=PhoneNumberNormalizer.canonical(x);if(!c.isEmpty())return c;}catch(Exception ignored){}int i=n(raw).indexOf("Phone:");if(i<0)return"";String p=n(raw).substring(i+6).trim().split("\\n",2)[0].trim();return PhoneNumberNormalizer.canonical(p);}
-    private static String cleanContactName(String x){return n(x).replaceAll("(?i)\\s+(?:facebook\\s+|web\\s+)?phone$","").replaceAll("\\s+"," ").trim();}
     private static String firstLine(String x){String s=n(x);int i=s.indexOf('\n');return n(i<0?s:s.substring(0,i));}
     private static String n(String s){return s==null?"":s.trim();}
 }

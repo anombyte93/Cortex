@@ -33,6 +33,7 @@ public class VaultDb extends SQLiteOpenHelper {
         if(oldV<4){createVisionTables(db);db.execSQL("UPDATE knowledge_items SET status='queued',analysis_error='' WHERE type IN ('SCREENSHOT','IMAGE') AND status='analyzed'");}
         if(oldV<5)CognitiveSchema.ensure(db);
         if(oldV<6)CognitiveSchema.ensure(db);
+        if(oldV<7)CognitiveSchema.ensure(db);
     }
 
     public long insert(String type,String source,String title,String raw,String category,String tags,String attachment,String fingerprint,String metadata){if(fingerprint!=null&&!fingerprint.isEmpty()){long existing=findFingerprint(fingerprint);if(existing>0)return -existing;}long now=System.currentTimeMillis();ContentValues v=new ContentValues();v.put("type",type);v.put("source",source);v.put("title",title);v.put("raw_text",raw);v.put("extracted_text","");v.put("summary","");v.put("category",category);v.put("tags",tags);v.put("attachment_path",attachment);v.put("status","queued");v.put("fingerprint",fingerprint);v.put("analysis_error","");v.put("metadata_json",metadata);v.put("created_at",now);v.put("updated_at",now);return getWritableDatabase().insert("knowledge_items",null,v);}

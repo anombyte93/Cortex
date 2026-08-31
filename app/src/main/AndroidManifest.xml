@@ -12,15 +12,16 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
-    <application android:name=".CortexApp" android:theme="@style/AppTheme" android:label="Cortex" android:allowBackup="true">
+    <application android:name=".CortexApp" android:theme="@style/AppTheme" android:label="Cortex" android:allowBackup="false">
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.feedback.files" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/feedback_file_paths" /></provider>
         <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="${applicationId}.shizuku" android:multiprocess="false" android:enabled="true" android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <activity android:name=".InputActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity>
+        <activity android:name=".InputActivity" android:exported="false" android:theme="@style/CaptureSheetTheme" />
         <activity android:name=".SatinBriefActivity" android:exported="false" />
         <activity android:name=".CortexOrbBriefActivity" android:exported="false" />
         <activity android:name=".ProposalBriefActivity" android:exported="false" />
-        <activity-alias android:name=".PremiumHomeActivity" android:targetActivity=".ProposalBriefActivity" android:exported="false" />
+        <activity android:name=".CompactTodayActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter></activity>
+        <activity-alias android:name=".PremiumHomeActivity" android:targetActivity=".CompactTodayActivity" android:exported="false" />
 
         <activity android:name=".SatinCaptureActivity" android:exported="false" android:theme="@style/CaptureSheetTheme" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".CaptureActivity" android:exported="false" android:theme="@style/CaptureSheetTheme" android:windowSoftInputMode="adjustResize" />
@@ -31,14 +32,18 @@
 
         <activity android:name=".PeopleProjectsActivity" android:exported="false" />
         <activity android:name=".ProposalPeopleProjectsActivity" android:exported="false" />
+        <activity android:name=".InboxActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".SmartInboxActivity" android:exported="false" />
         <activity android:name=".VaultActivity" android:exported="false" />
         <activity android:name=".PromptLibraryActivity" android:exported="false" />
         <activity android:name=".AskCortexActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ProposalAskCortexActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".SettingsActivity" android:exported="false" />
+        <activity android:name=".AdvancedSettingsActivity" android:exported="false" />
         <activity android:name=".ReviewQueueActivity" android:exported="false" />
         <activity android:name=".RelevanceEvaluationActivity" android:exported="false" />
+        <activity android:name=".AttentionEvaluationActivity" android:exported="false" />
+        <activity android:name=".CognitiveShadowActivity" android:exported="false" />
         <activity android:name=".CorrectionLearningActivity" android:exported="false" />
         <activity android:name=".FeatureHubActivity" android:exported="false" />
         <activity android:name=".PhoneContextAccessActivity" android:exported="false" />
@@ -53,9 +58,11 @@
         <activity android:name=".BrainActivity" android:exported="false" />
         <activity android:name=".OpenRouterSettingsActivity" android:exported="false" android:label="Cortex OpenRouter Setup" />
         <activity android:name=".GeminiSettingsActivity" android:exported="false" android:label="Cortex Gemini Setup" />
-        <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".SelfContainedReviewActivity" android:exported="false" android:label="Cortex Phone-Only Review" />
+        <activity android:name=".StableSelfContainedReviewActivity" android:exported="false" android:label="Cortex Phone-Only Review" />
 
         <service android:name=".LocalModelDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".SelfContainedReviewService" android:exported="false" android:foregroundServiceType="dataSync" />
         <service android:name=".CortexRecordService" android:exported="false" android:foregroundServiceType="microphone" />
         <service android:name=".NotificationCaptureService" android:label="Cortex Notification Memory" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true"><intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter></service>
         <service android:name=".CortexQuickTileService" android:label="Cortex Voice" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true"><intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter></service>

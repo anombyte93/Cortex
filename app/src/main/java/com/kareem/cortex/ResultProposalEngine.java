@@ -9,6 +9,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Universal micro-level proposal fabric.
@@ -43,8 +45,13 @@ public final class ResultProposalEngine {
 
     public interface Callback { void done(ArrayList<Proposal> proposals,String provider,String error); }
 
+    private static final long MODEL_TIMEOUT_MS=45_000L;
     private static final Handler MAIN=new Handler(Looper.getMainLooper());
-    private static final ScheduledExecutorService WORK=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"cortex-result-proposals");t.setPriority(Thread.NORM_PRIORITY-1);return t;});
+    // Cache/batching bookkeeping must never be held hostage by a slow network/model call.
+    private static final ScheduledExecutorService QUEUE=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"cortex-proposal-queue");t.setPriority(Thread.NORM_PRIORITY-1);return t;});
+    // A retry gets a genuinely fresh execution lane instead of sitting behind the timed-out request.
+    private static final ExecutorService MODELS=Executors.newFixedThreadPool(3,r->{Thread t=new Thread(r,"cortex-proposal-model");t.setPriority(Thread.NORM_PRIORITY-1);return t;});
+    private static final Object LOCAL_MODEL_LOCK=new Object();
     private static final LinkedHashMap<String,Pending> PENDING=new LinkedHashMap<>();
     private static boolean flushScheduled=false;
     private static final Set<String> ACTION_TYPES=new HashSet<>(Arrays.asList(
@@ -58,16 +65,24 @@ public final class ResultProposalEngine {
     private static final class Cached {final ArrayList<Proposal> proposals;final String provider;Cached(ArrayList<Proposal> p,String provider){proposals=p;this.provider=provider;}}
     private static final class ModelOutput {final String raw,provider;ModelOutput(String r,String p){raw=n(r);provider=n(p);}}
 
-    public static void request(Context context,Target target,Callback callback){
+    public static void request(Context context,Target target,Callback callback){enqueue(context,target,callback,true);}
+    /** Explicit retry path: skip cache and do not join an older same-fingerprint request. */
+    public static void requestFresh(Context context,Target target,Callback callback){enqueue(context,target,callback,false);}
+
+    private static void enqueue(Context context,Target target,Callback callback,boolean useCache){
         if(context==null||target==null||target.text.trim().isEmpty()){deliver(callback,new ArrayList<>(),"","empty result");return;}
         Context app=context.getApplicationContext();String fp=target.fingerprint();
-        WORK.execute(()->{
-            VaultDb db=null;
-            try{db=new VaultDb(app);ensure(db);Cached cached=load(db,fp);if(cached!=null){deliver(callback,cached.proposals,cached.provider,"");return;}}
-            catch(Throwable ignored){}finally{if(db!=null)try{db.close();}catch(Throwable ignored){}}
-            Pending existing=PENDING.get(fp);if(existing!=null){if(callback!=null)existing.callbacks.add(callback);return;}
-            PENDING.put(fp,new Pending(app,target,fp,callback));
-            if(!flushScheduled){flushScheduled=true;WORK.schedule(ResultProposalEngine::flush,180,TimeUnit.MILLISECONDS);}
+        QUEUE.execute(()->{
+            if(useCache){
+                VaultDb db=null;
+                try{db=new VaultDb(app);ensure(db);Cached cached=load(db,fp);if(cached!=null){deliver(callback,cached.proposals,cached.provider,"");return;}}
+                catch(Throwable ignored){}finally{if(db!=null)try{db.close();}catch(Throwable ignored){}}
+                Pending existing=PENDING.get(fp);if(existing!=null){if(callback!=null)existing.callbacks.add(callback);return;}
+                PENDING.put(fp,new Pending(app,target,fp,callback));
+            }else{
+                PENDING.put(fp+"#fresh-"+System.nanoTime(),new Pending(app,target,fp,callback));
+            }
+            if(!flushScheduled){flushScheduled=true;QUEUE.schedule(ResultProposalEngine::flush,180,TimeUnit.MILLISECONDS);}
         });
     }
 
@@ -78,18 +93,31 @@ public final class ResultProposalEngine {
     }
 
     private static void processInChunks(ArrayList<Pending> xs,int size,boolean cloudAllowed){
-        for(int start=0;start<xs.size();start+=size){int end=Math.min(xs.size(),start+size);ArrayList<Pending> batch=new ArrayList<>(xs.subList(start,end));processBatch(batch,cloudAllowed);}
+        for(int start=0;start<xs.size();start+=size){int end=Math.min(xs.size(),start+size);ArrayList<Pending> batch=new ArrayList<>(xs.subList(start,end));startBatch(batch,cloudAllowed);}
     }
 
-    private static void processBatch(ArrayList<Pending> batch,boolean cloudAllowed){
-        if(batch.isEmpty())return;Context app=batch.get(0).app;String prompt=prompt(batch);ModelOutput mo=null;String error="";
-        try{mo=runModel(app,prompt,cloudAllowed);}catch(Throwable e){error=e.getClass().getSimpleName()+(e.getMessage()==null?"":": "+e.getMessage());}
+    private static void startBatch(ArrayList<Pending> batch,boolean cloudAllowed){
+        if(batch.isEmpty())return;Context app=batch.get(0).app;String prompt=prompt(batch),hint=providerHint(app,cloudAllowed);AtomicBoolean completed=new AtomicBoolean(false);AtomicReference<ScheduledFuture<?>> timeoutRef=new AtomicReference<>();
+        final Future<?> future;
+        try{
+            future=MODELS.submit(()->{
+                ModelOutput mo=null;String error="";
+                try{mo=runModel(app,prompt,cloudAllowed);}catch(Throwable e){error=e.getClass().getSimpleName()+(e.getMessage()==null?"":": "+e.getMessage());}
+                if(!completed.compareAndSet(false,true))return;ScheduledFuture<?> timeout=timeoutRef.get();if(timeout!=null)timeout.cancel(false);ModelOutput result=mo;String failure=error;QUEUE.execute(()->finishBatch(batch,result,hint,failure));
+            });
+        }catch(RejectedExecutionException e){finishBatch(batch,null,hint,"proposal executor unavailable");return;}
+        ScheduledFuture<?> timeout=QUEUE.schedule(()->{
+            if(!completed.compareAndSet(false,true))return;future.cancel(true);finishBatch(batch,null,hint,"timeout: model did not finish within 45 seconds");
+        },MODEL_TIMEOUT_MS,TimeUnit.MILLISECONDS);timeoutRef.set(timeout);if(completed.get())timeout.cancel(false);
+    }
+
+    private static void finishBatch(ArrayList<Pending> batch,ModelOutput mo,String providerHint,String error){
         Map<String,ArrayList<Proposal>> parsed=mo==null?Collections.emptyMap():parse(mo.raw,batch.size());
-        VaultDb db=null;try{db=new VaultDb(app);ensure(db);}catch(Throwable ignored){}
+        VaultDb db=null;try{db=new VaultDb(batch.get(0).app);ensure(db);}catch(Throwable ignored){}
         for(int i=0;i<batch.size();i++){
             Pending p=batch.get(i);ArrayList<Proposal> proposals=parsed.get("R"+(i+1));if(proposals==null)proposals=new ArrayList<>();
             if(mo!=null&&db!=null)try{save(db,p.fingerprint,p.target,proposals,mo.provider);}catch(Throwable ignored){}
-            String provider=mo==null?"":mo.provider;for(Callback cb:p.callbacks)deliver(cb,proposals,provider,error);
+            String provider=mo==null?n(providerHint):mo.provider;for(Callback cb:p.callbacks)deliver(cb,proposals,provider,error);
         }
         if(db!=null)try{db.close();}catch(Throwable ignored){}
     }
@@ -104,13 +132,19 @@ public final class ResultProposalEngine {
             }catch(Throwable e){cloudError=e;}
         }
         if(LocalLlmRuntime.ready(app)&&LocalModelManager.verified(app)){
-            LocalLlmBridge.CompletionResult r=LocalLlmBridge.completeCached(LocalModelManager.modelFile(app).getAbsolutePath(),prompt,
-                    "You are Cortex Proposal Router. Return only the requested JSON. Suggest useful next moves specific to each result. Never invent private facts. /no_think",1200);
-            return new ModelOutput(r.getText(),"local-qwen");
+            synchronized(LOCAL_MODEL_LOCK){
+                LocalLlmBridge.CompletionResult r=LocalLlmBridge.completeCached(LocalModelManager.modelFile(app).getAbsolutePath(),prompt,
+                        "You are Cortex Proposal Router. Return only the requested JSON. Suggest useful next moves specific to each result. Never invent private facts. /no_think",1200);
+                return new ModelOutput(r.getText(),"local-qwen");
+            }
         }
         if(cloudError instanceof Exception)throw (Exception)cloudError;
         if(cloudAllowed&&!ExternalBrainProvider.configured(app))throw new IllegalStateException("No external proposal model configured and local model is not ready");
         throw new IllegalStateException("Local proposal model is not ready for this private result");
+    }
+
+    private static String providerHint(Context app,boolean cloudAllowed){
+        try{if(cloudAllowed&&ExternalBrainProvider.configured(app))return ExternalBrainProvider.activeProviderId(app)+" · "+ExternalBrainProvider.activeModel(app);if(LocalLlmRuntime.ready(app)&&LocalModelManager.verified(app))return"local-qwen";}catch(Throwable ignored){}return"";
     }
 
     private static String prompt(ArrayList<Pending> batch){
